@@ -13,6 +13,36 @@
 #include <arpa/inet.h>
 
 #define ALIGN(a) (((a+sizeof(void*)-1)/sizeof(void*))*sizeof(void*))
+#define CMDLINE_MAXSIZE 512
+#define CMDLINE_MAXARGS 16
+#define PIPE_RX_BUFSZ   256
+
+int parse_cmdline(char *cmd_line, char *args[], int maxarg, const char *delim)
+{
+  char *saveptr;
+  char *token;
+  char **arg = args;
+  int cnt = maxarg;
+
+  token = strtok_r(cmd_line, delim, &saveptr);
+  if (token == NULL)
+    return 0;
+
+  while(maxarg > 0) {
+    *arg = token;
+    arg++;
+    cnt--;
+    token = strtok_r(NULL, delim, &saveptr);
+
+    if (token == NULL) {
+      *arg = NULL;
+      break;
+    }
+  }
+
+  return (maxarg - cnt);
+}
+
 
 /**
  * Packs the data from a name/value string into a hostent return
@@ -69,9 +99,11 @@ enum nss_status _nss_etcd_gethostbyname2_r (const char *name, int af,
     /* OUT */ int *errnop, /* OUT */ int *h_errnop) {
 
   int pid, pipes[2], rv;  /* For hardcore forking action later. */
-  char addr[256];
+  char addr[PIPE_RX_BUFSZ];
+  char cmd_line[CMDLINE_MAXSIZE];
+  
   int last_err;  /* Just in case we need to perror(3). */
-  char **args;
+  char *args[CMDLINE_MAXARGS];
 
   /* Only IPv4 addresses make sense for this resolver. */
   if (af != AF_INET) {
@@ -82,24 +114,15 @@ enum nss_status _nss_etcd_gethostbyname2_r (const char *name, int af,
 
   pipe(pipes);
   if (0 == (pid = fork())) {
-    args = (char **) calloc(sizeof(char *), 4);
-    if (args < 0) goto CHILD_ERR;  /** Dijkstra can suck it. */
-
-    args[0] = (char *) calloc(sizeof(char), 8);
-    strcpy(args[0], "etcdctl");
-    args[1] = (char *) calloc(sizeof(char), 4);
-    strcpy(args[1], "get");
-    args[2] = (char *) calloc(sizeof(char), strlen(name) + 7);
-    strcpy(args[2], "/hosts/");
-    strcpy(args[2] + 7, name);
-    args[3] = NULL;
-
+    strcpy(cmd_line, "etcdctl get /hosts/");
+    strcat(cmd_line, name);
+    parse_cmdline(cmd_line, args, CMDLINE_MAXARGS - 1, " ");
     /* Child code */
     close(pipes[0]);
     close(0);
     close(2);
     dup2(pipes[1], 1);
-    execvp("etcdctl", args);
+    execvp(args[0], args);
 
     CHILD_ERR:
       last_err = errno;
@@ -108,17 +131,16 @@ enum nss_status _nss_etcd_gethostbyname2_r (const char *name, int af,
   } else if (pid > 0) {
     /* Parent code */
     close(pipes[1]);
+    int len;
 
-    if (0 > read(pipes[0], addr, 255)) {
+    if (0 > (len = read(pipes[0], addr, PIPE_RX_BUFSZ - 1))) {
       last_err = errno;
       perror("read");
       *errnop = last_err;
       *h_errnop = NO_DATA;
       return NSS_STATUS_NOTFOUND;
-    } else {
-      int len = strlen(addr);
+    } else 
       addr[len - 1] = '\0';
-    }
 
     waitpid(pid, &rv, 0);
 
