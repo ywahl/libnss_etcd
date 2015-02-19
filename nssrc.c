@@ -114,7 +114,18 @@ enum nss_status _nss_etcd_gethostbyname2_r (const char *name, int af,
 
   pipe(pipes);
   if (0 == (pid = fork())) {
-    strcpy(cmd_line, "etcdctl get /hosts/");
+    strcpy(cmd_line, "etcdctl");
+    if (getenv("ETCD_SERVER_URL")) {
+      strcat(cmd_line, " -C ");
+      strcat(cmd_line, getenv("ETCD_SERVER_URL"));
+    }
+    strcat(cmd_line, " get ");
+    if (getenv("ETCD_PATH")) {
+      strcat(cmd_line, " ");
+      strcat(cmd_line, getenv("ETCD_PATH"));
+    } else {
+      strcat(cmd_line, " /hosts/");
+    }
     strcat(cmd_line, name);
     parse_cmdline(cmd_line, args, CMDLINE_MAXARGS - 1, " ");
     /* Child code */
